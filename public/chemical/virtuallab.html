@@ -467,9 +467,12 @@
           payload.id = state.selected.id;
         }
 
+        var headers = typeof window.__nbAuthHeaders === 'function'
+          ? await window.__nbAuthHeaders({ 'Content-Type': 'application/json' })
+          : { 'Content-Type': 'application/json' };
         var response = await fetch(endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           body: JSON.stringify(payload),
         });
         var json = await response.json();
@@ -1399,6 +1402,8 @@
 
     })();
   </script>
+  <!-- Lab Auth (token Smart Class cho lưu/xoá thí nghiệm) -->
+  <script src="/js/lab-auth.js"></script>
   <!-- NB Sync Bridge -->
   <script src="/js/nb-sync-bridge.js"></script>
 </body>

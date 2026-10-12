@@ -1,5 +1,3 @@
-import { getSupabaseServerClient, hasSupabaseServerConfig } from '@/lib/supabase/server'
-
 export type ExperimentRecord = {
   id: string
   name: string
@@ -16,14 +14,13 @@ type ExperimentRow = {
   name: string
   description: string | null
   module_id: number
-  content: string
+  content?: string
   thumbnail_url: string | null
   created_at: string
   updated_at: string
 }
 
 type SaveExperimentInput = {
-  id?: string
   name: string
   description?: string | null
   moduleId?: number
@@ -31,8 +28,26 @@ type SaveExperimentInput = {
   thumbnailUrl?: string | null
 }
 
-const EXPERIMENT_TABLE = 'experiments'
-const DEFAULT_PAGE_SIZE = 20
+export class ExperimentApiError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+const EXPERIMENT_PATH = '/api/lab-experiments'
+const EXPERIMENT_SUBJECT = 'chemistry'
+const REQUEST_TIMEOUT_MS = 20000
+
+function getApiBase() {
+  return (process.env.SMART_CLASS_API_URL || '').trim().replace(/\/+$/, '')
+}
+
+export function isExperimentApiReady() {
+  return Boolean(getApiBase())
+}
 
 function normalizeExperiment(row: ExperimentRow): ExperimentRecord {
   return {
@@ -40,137 +55,111 @@ function normalizeExperiment(row: ExperimentRow): ExperimentRecord {
     name: row.name,
     description: row.description,
     moduleId: row.module_id,
-    content: row.content,
+    content: row.content ?? '',
     thumbnailUrl: row.thumbnail_url,
     createTime: row.created_at,
     updateTime: row.updated_at,
   }
 }
 
-function getSafePage(value: unknown) {
-  const page = Number(value)
-  if (!Number.isFinite(page) || page < 1) {
-    return 1
+function toPayload(input: SaveExperimentInput) {
+  return {
+    subject: EXPERIMENT_SUBJECT,
+    name: input.name,
+    description: input.description?.trim() || null,
+    module_id: input.moduleId ?? 9,
+    content: input.content,
+    thumbnail_url: input.thumbnailUrl?.trim() || null,
   }
-
-  return Math.floor(page)
 }
 
-function getSafePageSize(value: unknown) {
-  const pageSize = Number(value)
-  if (!Number.isFinite(pageSize) || pageSize < 1) {
-    return DEFAULT_PAGE_SIZE
+async function requestApi<T>(path: string, init: RequestInit & { authorization?: string } = {}) {
+  const { authorization, headers, ...rest } = init
+  const res = await fetch(`${getApiBase()}${EXPERIMENT_PATH}${path}`, {
+    ...rest,
+    headers: {
+      Accept: 'application/json',
+      ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(authorization ? { Authorization: authorization } : {}),
+      ...headers,
+    },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+
+  const text = await res.text()
+  let json: { success?: boolean; data?: T; error?: string } = {}
+  if (text) {
+    try {
+      json = JSON.parse(text)
+    } catch {
+      json = {}
+    }
   }
 
-  return Math.min(Math.floor(pageSize), 100)
-}
+  if (!res.ok) {
+    throw new ExperimentApiError(json.error || `HTTP ${res.status}`, res.status)
+  }
 
-export function isSupabaseReady() {
-  return hasSupabaseServerConfig()
+  return json.data as T
 }
 
 export async function listExperiments(params: { page?: unknown; pageSize?: unknown; keyword?: unknown }) {
-  const page = getSafePage(params.page)
-  const pageSize = getSafePageSize(params.pageSize)
-  const keyword = typeof params.keyword === 'string' ? params.keyword.trim() : ''
-  const from = (page - 1) * pageSize
-  const to = from + pageSize - 1
-  const supabase = getSupabaseServerClient()
-
-  let query = supabase
-    .from(EXPERIMENT_TABLE)
-    .select('id, name, description, module_id, content, thumbnail_url, created_at, updated_at', { count: 'exact' })
-    .order('updated_at', { ascending: false })
-    .range(from, to)
-
-  if (keyword) {
-    query = query.ilike('name', `%${keyword}%`)
+  const query = new URLSearchParams({ subject: EXPERIMENT_SUBJECT })
+  if (params.page != null) query.set('page', String(params.page))
+  if (params.pageSize != null) query.set('pageSize', String(params.pageSize))
+  if (typeof params.keyword === 'string' && params.keyword.trim()) {
+    query.set('keyword', params.keyword.trim())
   }
 
-  const { data, count, error } = await query
-
-  if (error) {
-    throw error
-  }
+  const data = await requestApi<{ list: ExperimentRow[]; total: number; page: number; pageSize: number }>(
+    `?${query.toString()}`,
+  )
 
   return {
-    list: (data || []).map(row => normalizeExperiment(row as ExperimentRow)),
-    total: count || 0,
-    page,
-    pageSize,
+    list: (data?.list || []).map(normalizeExperiment),
+    total: data?.total || 0,
+    page: data?.page || 1,
+    pageSize: data?.pageSize || 20,
   }
 }
 
 export async function getExperimentDetail(id: string) {
-  const supabase = getSupabaseServerClient()
-  const { data, error } = await supabase
-    .from(EXPERIMENT_TABLE)
-    .select('id, name, description, module_id, content, thumbnail_url, created_at, updated_at')
-    .eq('id', id)
-    .maybeSingle()
-
-  if (error) {
+  try {
+    const data = await requestApi<ExperimentRow>(`/${encodeURIComponent(id)}`)
+    return data ? normalizeExperiment(data) : null
+  } catch (error) {
+    if (error instanceof ExperimentApiError && error.status === 404) {
+      return null
+    }
     throw error
   }
-
-  return data ? normalizeExperiment(data as ExperimentRow) : null
 }
 
-export async function createExperiment(input: SaveExperimentInput) {
-  const supabase = getSupabaseServerClient()
-  const payload = {
-    name: input.name,
-    description: input.description?.trim() || null,
-    module_id: input.moduleId ?? 9,
-    content: input.content,
-    thumbnail_url: input.thumbnailUrl?.trim() || null,
-  }
+export async function createExperiment(input: SaveExperimentInput, authorization?: string) {
+  const data = await requestApi<ExperimentRow>('', {
+    method: 'POST',
+    body: JSON.stringify(toPayload(input)),
+    authorization,
+  })
 
-  const { data, error } = await supabase
-    .from(EXPERIMENT_TABLE)
-    .insert(payload)
-    .select('id, name, description, module_id, content, thumbnail_url, created_at, updated_at')
-    .single()
-
-  if (error) {
-    throw error
-  }
-
-  return normalizeExperiment(data as ExperimentRow)
+  return normalizeExperiment(data)
 }
 
-export async function updateExperiment(input: SaveExperimentInput & { id: string }) {
-  const supabase = getSupabaseServerClient()
-  const payload = {
-    name: input.name,
-    description: input.description?.trim() || null,
-    module_id: input.moduleId ?? 9,
-    content: input.content,
-    thumbnail_url: input.thumbnailUrl?.trim() || null,
-    updated_at: new Date().toISOString(),
-  }
+export async function updateExperiment(input: SaveExperimentInput & { id: string }, authorization?: string) {
+  const data = await requestApi<ExperimentRow>(`/${encodeURIComponent(input.id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(toPayload(input)),
+    authorization,
+  })
 
-  const { data, error } = await supabase
-    .from(EXPERIMENT_TABLE)
-    .update(payload)
-    .eq('id', input.id)
-    .select('id, name, description, module_id, content, thumbnail_url, created_at, updated_at')
-    .single()
-
-  if (error) {
-    throw error
-  }
-
-  return normalizeExperiment(data as ExperimentRow)
+  return normalizeExperiment(data)
 }
 
-export async function deleteExperiment(id: string) {
-  const supabase = getSupabaseServerClient()
-  const { error } = await supabase.from(EXPERIMENT_TABLE).delete().eq('id', id)
-
-  if (error) {
-    throw error
-  }
+export async function deleteExperiment(id: string, authorization?: string) {
+  await requestApi<undefined>(`/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    authorization,
+  })
 
   return true
 }

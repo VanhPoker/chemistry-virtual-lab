@@ -1,10 +1,11 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
 
 import {
+  ExperimentApiError,
   createExperiment,
   deleteExperiment,
   getExperimentDetail,
-  isSupabaseReady,
+  isExperimentApiReady,
   listExperiments,
   updateExperiment,
 } from '@/lib/experiments'
@@ -88,6 +89,27 @@ function normalizeExperimentContent(value: unknown) {
     }
 }
 
+function getAuthorization(req: NextApiRequest) {
+    const value = req.headers.authorization
+    return typeof value === 'string' && /^Bearer\s+\S+/i.test(value) ? value : ''
+}
+
+function getApiErrorMessage(error: ExperimentApiError) {
+    if (error.status === 401) {
+        return 'Phiên đăng nhập Smart Class đã hết hạn hoặc chưa đăng nhập'
+    }
+
+    if (error.status === 403) {
+        return 'Bạn không có quyền sửa hoặc xoá thí nghiệm này'
+    }
+
+    if (error.status === 404) {
+        return 'Experiment not found'
+    }
+
+    return error.message
+}
+
 function getErrorMessage(error: unknown) {
     if (error instanceof Error) {
         return error.message
@@ -124,13 +146,23 @@ function getErrorMessage(error: unknown) {
 }
 
 async function handleExperimentRoute(req: NextApiRequest, res: NextApiResponse, slug: string[]) {
-    if (!isSupabaseReady()) {
+    if (!isExperimentApiReady()) {
         res.status(200).json(MOCK_EMPTY_LIST)
         return
     }
 
     const experimentPath = getExperimentPath(slug).toLowerCase()
     const body = getRequestBody(req)
+    const authorization = getAuthorization(req)
+
+    if (req.method === 'POST' && !authorization) {
+        res.status(401).json({
+            code: 401,
+            data: null,
+            msg: 'Vui lòng mở phòng thí nghiệm từ Smart Class (đã đăng nhập) để lưu hoặc xoá',
+        })
+        return
+    }
 
     try {
         if (req.method === 'GET' && experimentPath === '/list') {
@@ -178,7 +210,7 @@ async function handleExperimentRoute(req: NextApiRequest, res: NextApiResponse, 
                 moduleId: Number(body.moduleId) || 9,
                 content,
                 thumbnailUrl: typeof body.thumbnailUrl === 'string' ? body.thumbnailUrl : null,
-            })
+            }, authorization)
             res.status(200).json({ code: 200, data, msg: 'success' })
             return
         }
@@ -203,7 +235,7 @@ async function handleExperimentRoute(req: NextApiRequest, res: NextApiResponse, 
                 moduleId: Number(body.moduleId) || 9,
                 content,
                 thumbnailUrl: typeof body.thumbnailUrl === 'string' ? body.thumbnailUrl : null,
-            })
+            }, authorization)
             res.status(200).json({ code: 200, data, msg: 'success' })
             return
         }
@@ -215,13 +247,18 @@ async function handleExperimentRoute(req: NextApiRequest, res: NextApiResponse, 
                 return
             }
 
-            await deleteExperiment(id)
+            await deleteExperiment(id, authorization)
             res.status(200).json(MOCK_SUCCESS)
             return
         }
 
         res.status(404).json({ code: 404, data: null, msg: 'Experiment route not found' })
     } catch (error) {
+        if (error instanceof ExperimentApiError && error.status >= 400 && error.status < 500) {
+            res.status(error.status).json({ code: error.status, data: null, msg: getApiErrorMessage(error) })
+            return
+        }
+
         res.status(500).json({ code: 500, data: null, msg: getErrorMessage(error) })
     }
 }

@@ -1,4 +1,5 @@
 import Head from 'next/head'
+import Script from 'next/script'
 import type { KeyboardEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -22,6 +23,12 @@ type ExperimentListResponse = {
 type ApiResponse<T> = { code: number; data: T; msg: string }
 
 type DeleteTarget = Pick<ExperimentRecord, 'id' | 'name'> | null
+
+declare global {
+  interface Window {
+    __nbAuthHeaders?: (headers?: Record<string, string>) => Promise<Record<string, string>>
+  }
+}
 
 const PAGE_SIZE = 24
 const THS_TITLE = 'THS - Phòng Thí Nghiệm Ảo'
@@ -257,9 +264,12 @@ export default function ExperimentsPage() {
     if (!deleteTarget) return
     setDeleteLoading(true)
     try {
+      const headers: Record<string, string> = window.__nbAuthHeaders
+        ? await window.__nbAuthHeaders({ 'Content-Type': 'application/json' })
+        : { 'Content-Type': 'application/json' }
       const res = await fetch('/experiment/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ id: deleteTarget.id }),
       })
       const json = await readApiJson<ApiResponse<Record<string, never>>>(res)
@@ -282,6 +292,7 @@ export default function ExperimentsPage() {
         <link rel="icon" href={THS_FAVICON} type="image/svg+xml" />
         <link rel="shortcut icon" href={THS_FAVICON} type="image/svg+xml" />
       </Head>
+      <Script src="/js/lab-auth.js" strategy="afterInteractive" />
 
       <style jsx>{`
         :global(.icon) {

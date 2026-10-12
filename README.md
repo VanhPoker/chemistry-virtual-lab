@@ -24,6 +24,21 @@ The `pages/api` directory is mapped to `/api/*`. Files in this directory are tre
 
 This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Kho thí nghiệm
+
+Mẫu thí nghiệm lưu ở backend Smart Class (`/api/lab-experiments`). Cấu hình server:
+
+```bash
+SMART_CLASS_API_URL=https://smart-class-dev-api.gkebooks.click
+```
+
+- staging: `https://api-smart-class-staging.truonghocsoquocgia.vn`
+- prod: `https://api-smart-class.truonghocsoquocgia.vn`
+
+Đọc danh sách/chi tiết không cần đăng nhập. Lưu/xoá cần lab chạy trong iframe Smart Class:
+`public/js/lab-auth.js` xin access token từ trang cha qua `postMessage` (`NB_AUTH_REQUEST` → `NB_AUTH`).
+Thiếu `SMART_CLASS_API_URL` thì kho trả danh sách rỗng.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
